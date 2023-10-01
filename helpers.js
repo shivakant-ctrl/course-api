@@ -1,32 +1,4 @@
-import fs from 'fs';
 import validator from 'validator';
-
-// Read a file synchronously
-export function readFileData(filePath) {
-  const data = fs.readFileSync(filePath, 'utf-8');
-  return JSON.parse(data);
-}
-
-// Write to a file synchronously
-export function writeToFile(filePath, dataToWrite) {
-  fs.writeFileSync(filePath, JSON.stringify(dataToWrite));
-}
-
-// Verify if the user exists 
-export function indexOfUser(username, password, users) {
-  return users.findIndex(user => user.username === username && user.password === password);
-}
-
-// Verify if the course exists
-export function indexOfCourse(id, courses) {
-  return courses.findIndex(course => course.id === id);
-}
-
-// Get index of published course
-export function indexOfPublishedCourse(id, courses) {
-  const publishedCourses = courses.filter(course => course.published === 'true');
-  return publishedCourses.findIndex(course => course.id === id);
-}
 
 // Verify if username is valid
 export function isValidUsername(username) {
