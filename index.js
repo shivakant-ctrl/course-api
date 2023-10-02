@@ -1,5 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
+import jwt from 'jsonwebtoken';
+import * as bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
 import bodyParser from 'body-parser';
 import validator from 'validator';
@@ -33,6 +35,51 @@ const url = `mongodb+srv://${encodedUsername}:${encodedPassword}@cluster0.gqjqoc
 // Create a MongoDB client
 mongoose.connect(url, { useNewUrlParser: true, useUnifiedTopology: true, dbName: dbName });
 
+// JWT secret keys
+const adminSecretKey = process.env.JWT_ADMIN_SECRET_KEY;
+const userSecretKey = process.env.JWT_USER_SECRET_KEY;
+
+const saltRounds = 10;
+
+// Authenticate admin using JWT
+function authenticateAdmin(req, res, next) {
+  const token = req.headers.authorization;
+  if (!token) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  try {
+    const decoded = jwt.verify(token.split(' ')[1], adminSecretKey, (error, admin) => {
+      if (error) {
+        return res.status(401).json({ message: 'Unauthorized' });
+      } else {
+        next();
+      }
+    });
+  } catch (error) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+}
+
+// Authenticate user using JWT
+function authenticateUser(req, res, next) {
+  const token = req.headers.authorization;
+  if (!token) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  try {
+    const decoded = jwt.verify(token.split(' ')[1], userSecretKey, (error, user) => {
+      if (error) {
+        return res.status(401).json({ message: 'Unauthorized' });
+      } else {
+        req.user = user;
+        next();
+      }
+    });
+  } catch (error) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+}
+
 /** Admin routes */
 
 // Admin signup
@@ -45,9 +92,10 @@ app.post('/admin/signup', async (req, res) => {
       if (foundAdmin) {
         return res.status(409).send({ message: 'Admin already exists' });
       } else {
-        const newAdmin = new Admin({ username, password });
+        const hash = bcrypt.hashSync(password, saltRounds);
+        const newAdmin = new Admin({ username, password: hash });
         const savedAdmin = await newAdmin.save();
-        return res.status(201).send({ message: 'Admin created successfully', adminId: savedAdmin._id });
+        return res.status(201).send({ message: 'Admin created successfully' });
       }
     } else {
       return res.status(400).send({ message: 'Invalid username and/or password' });
@@ -62,9 +110,10 @@ app.post('/admin/signup', async (req, res) => {
 app.post('/admin/login', async (req, res) => {
   try {
     const { username, password } = req.headers;
-    const foundAdmin = await Admin.findOne({ username, password });
-    if (foundAdmin) {
-      return res.status(200).send({ message: 'Admin login successful' });
+    const foundAdmin = await Admin.findOne({ username });
+    if (bcrypt.compareSync(password, foundAdmin.password)) {
+      const token = jwt.sign({ username, role: 'admin' }, adminSecretKey, { expiresIn: '1h' });
+      return res.status(200).send({ message: 'Admin login successful', token });
     } else {
       return res.status(401).send({ message: 'Admin authentication failed' });
     }
@@ -75,22 +124,16 @@ app.post('/admin/login', async (req, res) => {
 });
 
 // Create a course 
-app.post('/admin/courses', async (req, res) => {
+app.post('/admin/courses', authenticateAdmin, async (req, res) => {
   try {
-    const { username, password } = req.headers;
-    const foundAdmin = await Admin.findOne({ username, password });
-    if (foundAdmin) {
-      const rawCourseDetails = req.body;
-      const courseDetails = sanitizeCourseDetails(rawCourseDetails);
-      if (areValidCourseDetails(courseDetails)) {
-        const newCourse = new Course(courseDetails);
-        const savedCourse = await newCourse.save();
-        return res.status(201).send({ message: 'Course created successfully', courseId: savedCourse._id });
-      } else {
-        return res.status(400).send({ message: 'Invalid course details' });
-      }
+    const rawCourseDetails = req.body;
+    const courseDetails = sanitizeCourseDetails(rawCourseDetails);
+    if (areValidCourseDetails(courseDetails)) {
+      const newCourse = new Course(courseDetails);
+      const savedCourse = await newCourse.save();
+      return res.status(201).send({ message: 'Course created successfully', courseId: savedCourse._id });
     } else {
-      return res.status(401).send({ message: 'Admin authentication failed' });
+      return res.status(400).send({ message: 'Invalid course details' });
     }
   } catch (error) {
     console.error('Error in /admin/courses:', error);
@@ -99,45 +142,33 @@ app.post('/admin/courses', async (req, res) => {
 });
 
 // Update course details 
-app.put('/admin/courses/:courseId', async (req, res) => {
+app.put('/admin/courses/:courseId', authenticateAdmin, async (req, res) => {
   try {
     const requestedCourseId = req.params.courseId;
-    const { username, password } = req.headers;
     const rawUpdatedCourseDetails = req.body;
-    const foundAdmin = await Admin.findOne({ username, password });
-    if (foundAdmin) {
-      const foundCourse = await Course.findById(requestedCourseId);
-      if (foundCourse) {
-        const updatedCourseDetails = sanitizeCourseDetails(rawUpdatedCourseDetails);
-        if (areValidCourseDetails(updatedCourseDetails)) {
-          await Course.updateOne({ _id: requestedCourseId }, updatedCourseDetails);
-          return res.status(200).send({ message: 'Course updated successfully', courseId: requestedCourseId });
-        } else {
-          return res.status(400).send({ message: 'Invalid course details' });
-        }
+    const foundCourse = await Course.findById(requestedCourseId);
+    if (foundCourse) {
+      const updatedCourseDetails = sanitizeCourseDetails(rawUpdatedCourseDetails);
+      if (areValidCourseDetails(updatedCourseDetails)) {
+        await Course.updateOne({ _id: requestedCourseId }, updatedCourseDetails);
+        return res.status(200).send({ message: 'Course updated successfully' });
       } else {
-        return res.status(404).send({ message: 'Course with requested ID does not exist' });
+        return res.status(400).send({ message: 'Invalid course details' });
       }
     } else {
-      return res.status(401).send({ message: 'Admin authentication failed' });
+      return res.status(404).send({ message: 'Course with requested ID does not exist' });
     }
   } catch (error) {
-    console.error('Error in /admin/courses/:courseId:', error);
+    console.error('Error in /admin/courses/:courseId', error);
     return res.status(500).send({ message: 'Internal server error' });
   }
 });
 
 // Get all courses for admin 
-app.get('/admin/courses', async (req, res) => {
+app.get('/admin/courses', authenticateAdmin, async (req, res) => {
   try {
-    const { username, password } = req.headers;
-    const foundAdmin = await Admin.findOne({ username, password });
-    if (foundAdmin) {
-      const courses = await Course.find({});
-      return res.status(200).send({ courses: courses });
-    } else {
-      return res.status(401).send({ message: 'Admin authentication failed' });
-    }
+    const courses = await Course.find({});
+    return res.status(200).send({ courses: courses });
   } catch (error) {
     console.error('Error in /admin/courses:', error);
     return res.status(500).send({ message: 'Internal server error' });
@@ -156,9 +187,10 @@ app.post('/users/signup', async (req, res) => {
       if (foundUser) {
         return res.status(409).send({ message: 'Username already exists' });
       } else {
-        const newUser = new User({ username, password, purchasedCourses: [] });
+        const hash = bcrypt.hashSync(password, saltRounds);
+        const newUser = new User({ username, password: hash, purchasedCourses: [] });
         newUser.save();
-        return res.status(201).send({ message: 'User created successfully', userId: newUser._id });
+        return res.status(201).send({ message: 'User created successfully' });
       }
     } else {
       return res.status(400).send({ message: 'Invalid username and/or password' });
@@ -173,9 +205,10 @@ app.post('/users/signup', async (req, res) => {
 app.post('/users/login', async (req, res) => {
   try {
     const { username, password } = req.headers;
-    const foundUser = await User.findOne({ username, password });
-    if (foundUser) {
-      return res.status(200).send({ message: 'User login successful', username: foundUser.username, id: foundUser._id });
+    const foundUser = await User.findOne({ username });
+    if (bcrypt.compareSync(password, foundUser.password)) {
+      const token = jwt.sign({ username, role: 'user' }, userSecretKey, { expiresIn: '1h' });
+      return res.status(200).send({ message: 'User login successful', token });
     } else {
       return res.status(401).send({ message: 'User authentication failed' });
     }
@@ -186,16 +219,10 @@ app.post('/users/login', async (req, res) => {
 });
 
 // Get all courses for user 
-app.get('/users/courses', async (req, res) => {
+app.get('/users/courses', authenticateUser, async (req, res) => {
   try {
-    const { username, password } = req.headers;
-    const foundUser = await User.findOne({ username, password });
-    if (foundUser) {
-      const publishedCourses = await Course.find({ published: true });
-      return res.status(200).send({ courses: publishedCourses });
-    } else {
-      return res.status(401).send({ message: 'User authentication failed' });
-    }
+    const publishedCourses = await Course.find({ published: true });
+    return res.status(200).send({ courses: publishedCourses });
   } catch (error) {
     console.error('Error in /users/courses:', error);
     return res.status(500).send({ message: 'Internal server error' });
@@ -203,27 +230,22 @@ app.get('/users/courses', async (req, res) => {
 });
 
 // Purchase a course 
-app.post('/users/courses/:courseId', async (req, res) => {
+app.post('/users/courses/:courseId', authenticateUser, async (req, res) => {
   try {
     const requestedCourseId = req.params.courseId;
-    const { username, password } = req.headers;
-    const foundUser = await User.findOne({ username, password });
-    if (foundUser) {
-      const foundCourse = await Course.findOne({ _id: requestedCourseId, published: true });
-      if (foundCourse) {
-        const userCourses = foundUser.purchasedCourses;
-        if (userCourses.includes(requestedCourseId)) {
-          return res.status(409).send({ message: 'Course is already purchased', courseId: requestedCourseId });
-        } else {
-          foundUser.purchasedCourses.push(foundCourse);
-          await foundUser.save();
-          return res.status(200).send({ message: 'Course purchased successfully', courseId: requestedCourseId });
-        }
+    const foundUser = await User.findOne({ username: req.user.username });
+    const foundCourse = await Course.findOne({ _id: requestedCourseId, published: true });
+    if (foundCourse) {
+      const userCourses = foundUser.purchasedCourses;
+      if (userCourses.includes(requestedCourseId)) {
+        return res.status(409).send({ message: 'Course is already purchased' });
       } else {
-        return res.status(404).send({ message: 'Course with requested ID does not exist' });
+        foundUser.purchasedCourses.push(foundCourse);
+        await foundUser.save();
+        return res.status(200).send({ message: 'Course purchased successfully' });
       }
     } else {
-      return res.status(401).send({ message: 'User authentication failed' });
+      return res.status(404).send({ message: 'Course with requested ID does not exist' });
     }
   } catch (error) {
     console.error('Error in /users/courses/:courseId:', error);
@@ -232,15 +254,13 @@ app.post('/users/courses/:courseId', async (req, res) => {
 });
 
 // View user's purchased courses 
-app.get('/users/purchasedCourses', async (req, res) => {
+app.get('/users/purchasedCourses', authenticateUser, async (req, res) => {
   try {
-    const { username, password } = req.headers;
-    const foundUser = await User.findOne({ username, password }).populate('purchasedCourses');
+    const foundUser = await User.findOne({ username: req.user.username }).populate('purchasedCourses');
     if (foundUser) {
-      const purchasedCourses = foundUser.purchasedCourses;
-      return res.status(200).send({ message: purchasedCourses || [] });
+      return res.status(200).send({ message: foundUser.purchasedCourses || [] });
     } else {
-      return res.status(401).send({ message: 'User authentication failed' });
+      res.status(403).json({ message: 'User not found' });
     }
   } catch (error) {
     console.error('Error in /users/purchasedCourses:', error);
