@@ -15,6 +15,8 @@ import { Course } from './models/course.js';
 // Load environment variables from .env file
 dotenv.config();
 
+const PORT = process.env.PORT || 3000;
+
 // Create an instance of the Express application
 const app = express();
 
@@ -269,6 +271,6 @@ app.get('/users/purchasedCourses', authenticateUser, async (req, res) => {
 });
 
 // Start the Express server and listen on port 3000
-app.listen(3000, () => {
+app.listen(PORT, () => {
   console.log('Server is listening on port 3000');
 });
